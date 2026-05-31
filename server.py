@@ -94,7 +94,6 @@ ENV_VARS = [
     ("NVIDIA_API_KEY",           "NVIDIA NIM",               "provider",  True),
     ("ARCEEAI_API_KEY",          "Arcee AI",                 "provider",  True),
     ("STEPFUN_API_KEY",          "Step Plan",                "provider",  True),
-    ("AI_GATEWAY_API_KEY",       "Vercel AI Gateway",        "provider",  True),
     ("GEMINI_API_KEY",           "Google AI Studio",         "provider",  True),
     ("NOVITA_API_KEY",           "NovitaAI",                 "provider",  True),
     ("FIREWORKS_API_KEY",        "Fireworks AI",             "provider",  True),
@@ -999,6 +998,17 @@ async def api_config_reset(request: Request):
 
 
 # ── Pairing ───────────────────────────────────────────────────────────────────
+# Pending-request file format (hermes >= v0.15 / v2026.5.29.x, gateway/pairing.py):
+# each `{platform}-pending.json` entry is keyed by a random opaque `entry_id`
+# (secrets.token_hex), and the user-facing pairing code is stored only as a
+# salted hash ({hash, salt, user_id, user_name, created_at}) — the plaintext
+# code is never on disk. Our admin-approval flow is code-agnostic: the dashboard
+# is already cookie-authed, so we approve by moving an entry from pending →
+# approved keyed off that `entry_id` (round-tripped from the pending list as
+# `code`), reading `user_id`/`user_name` straight from the entry. We must NOT
+# uppercase that key — entry_ids are lowercase hex, and uppercasing them was
+# what silently broke approve/deny on the v0.15 upgrade. Older plaintext-keyed
+# entries still work here because we treat the key as an opaque handle.
 def _pjson(path: Path) -> dict:
     try:
         return json.loads(path.read_text()) if path.exists() else {}
@@ -1035,7 +1045,7 @@ async def api_pairing_approve(request: Request):
     if err := guard(request): return err
     try: body = await request.json()
     except Exception: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-    platform, code = body.get("platform",""), body.get("code","").upper().strip()
+    platform, code = body.get("platform",""), body.get("code","").strip()
     if not platform or not code:
         return JSONResponse({"error": "platform and code required"}, status_code=400)
     pending_path = PAIRING_DIR / f"{platform}-pending.json"
@@ -1043,9 +1053,14 @@ async def api_pairing_approve(request: Request):
     if code not in pending:
         return JSONResponse({"error": "Code not found"}, status_code=404)
     entry = pending.pop(code)
+    user_id = (entry.get("user_id") or "").strip() if isinstance(entry, dict) else ""
+    if not user_id:
+        # Malformed/legacy entry without a user_id — leave it in pending (we
+        # haven't written the pop yet) rather than silently discarding it.
+        return JSONResponse({"error": "Pending entry has no user_id"}, status_code=422)
     _wjson(pending_path, pending)
     approved = _pjson(PAIRING_DIR / f"{platform}-approved.json")
-    approved[entry["user_id"]] = {"user_name": entry.get("user_name",""), "approved_at": time.time()}
+    approved[user_id] = {"user_name": entry.get("user_name",""), "approved_at": time.time()}
     _wjson(PAIRING_DIR / f"{platform}-approved.json", approved)
     return JSONResponse({"ok": True})
 
@@ -1054,7 +1069,7 @@ async def api_pairing_deny(request: Request):
     if err := guard(request): return err
     try: body = await request.json()
     except Exception: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-    platform, code = body.get("platform",""), body.get("code","").upper().strip()
+    platform, code = body.get("platform",""), body.get("code","").strip()
     p = PAIRING_DIR / f"{platform}-pending.json"
     pending = _pjson(p)
     if code in pending:
