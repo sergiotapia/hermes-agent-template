@@ -49,6 +49,7 @@ from starlette.responses import (
     JSONResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 from starlette.routing import Route, WebSocketRoute
 from starlette.templating import Jinja2Templates
@@ -914,6 +915,18 @@ def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def get_api_server_url() -> str:
+    """Return the loopback URL for the Hermes API server child platform."""
+    env = {**os.environ, **read_env(ENV_FILE)}
+    explicit = env.get("HERMES_API_SERVER_PROXY_URL", "").rstrip("/")
+    if explicit:
+        return explicit
+
+    host = env.get("HERMES_API_SERVER_PROXY_HOST", "127.0.0.1")
+    port = env.get("API_SERVER_PORT", "8642")
+    return f"http://{host}:{port}"
+
+
 # ── Route handlers ────────────────────────────────────────────────────────────
 async def page_index(request: Request):
     if err := guard(request): return err
@@ -1244,6 +1257,78 @@ async def route_setup_404(request: Request) -> Response:
     return Response("Not Found", status_code=404, media_type="text/plain")
 
 
+async def _proxy_to_api_server(request: Request, target_path: str | None = None) -> Response:
+    """Forward OpenAI-compatible API traffic to hermes gateway's api_server.
+
+    This keeps Railway pointed at this Starlette app's single public $PORT while
+    still exposing both surfaces on one domain:
+      - / and dashboard WebSockets -> native Hermes dashboard on 9119
+      - /v1/* and selected /api/* endpoints -> Hermes API server on API_SERVER_PORT
+
+    No cookie guard is applied here. The upstream API server enforces
+    Authorization: Bearer API_SERVER_KEY and handles CORS/security headers.
+    """
+    client = get_http_client()
+    path = target_path or request.url.path
+    target = f"{get_api_server_url()}{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    req_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP
+    }
+    body = await request.body()
+
+    try:
+        upstream_cm = client.stream(
+            request.method,
+            target,
+            headers=req_headers,
+            content=body,
+        )
+        upstream = await upstream_cm.__aenter__()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return JSONResponse(
+            {"error": "Hermes API server unavailable"},
+            status_code=503,
+        )
+    except httpx.RequestError as e:
+        print(f"[api-proxy] upstream error for {request.method} {request.url.path}: {e}", flush=True)
+        return JSONResponse(
+            {"error": "Hermes API server proxy error"},
+            status_code=502,
+        )
+
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in HOP_BY_HOP
+        and k.lower() not in ("content-encoding", "content-length")
+    }
+
+    async def stream_body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_cm.__aexit__(None, None, None)
+
+    return StreamingResponse(
+        stream_body(),
+        status_code=upstream.status_code,
+        headers=resp_headers,
+    )
+
+
+async def route_api_server(request: Request) -> Response:
+    return await _proxy_to_api_server(request)
+
+
+async def route_api_server_prefixed(request: Request) -> Response:
+    path = request.path_params.get("path", "")
+    return await _proxy_to_api_server(request, f"/api/{path}".rstrip("/"))
+
+
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 async def auto_start():
     if is_config_complete():
@@ -1453,6 +1538,16 @@ routes = [
 
     # /setup/* typos return a real 404 — not a silent proxy fallthrough.
     Route("/setup/{path:path}",                 route_setup_404,     methods=ANY_METHOD),
+
+    # Public Hermes API server proxy. Auth is enforced upstream by
+    # API_SERVER_KEY, not by the dashboard cookie. Route these before the
+    # dashboard catch-all so one Railway domain can serve both surfaces.
+    Route("/v1/{path:path}",                    route_api_server,    methods=ANY_METHOD),
+    Route("/api/jobs",                          route_api_server,    methods=ANY_METHOD),
+    Route("/api/jobs/{path:path}",              route_api_server,    methods=ANY_METHOD),
+    Route("/api/sessions",                      route_api_server,    methods=ANY_METHOD),
+    Route("/api/sessions/{path:path}",          route_api_server,    methods=ANY_METHOD),
+    Route("/hermes-api/api/{path:path}",        route_api_server_prefixed, methods=ANY_METHOD),
 
     # Reverse-proxy hermes's dashboard WebSockets (Chat tab + sidecar).
     # WebSocketRoute is matched independently of HTTP routes, so order
