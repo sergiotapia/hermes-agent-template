@@ -36,8 +36,10 @@ RUN apt-get update && \
 # this template actually uses so first-message latency is instant.
 # When bumping HERMES_REF, re-check hermes-agent's pyproject.toml [all] and
 # the extras below against the new release's pyproject.toml.
+COPY patches/ /app/patches/
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
+    git apply /app/patches/api-server-session-auto-title.patch && \
     uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,hindsight]" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
