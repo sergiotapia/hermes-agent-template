@@ -903,6 +903,7 @@ dash = Dashboard()
 # Shared async HTTP client for the reverse proxy. Created lazily so we pick up
 # the running event loop, torn down in lifespan.
 _http_client: httpx.AsyncClient | None = None
+_api_http_client: httpx.AsyncClient | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -913,6 +914,16 @@ def get_http_client() -> httpx.AsyncClient:
             follow_redirects=False,
         )
     return _http_client
+
+
+def get_api_http_client() -> httpx.AsyncClient:
+    global _api_http_client
+    if _api_http_client is None:
+        _api_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=5.0, read=300.0, write=30.0, pool=30.0),
+            follow_redirects=False,
+        )
+    return _api_http_client
 
 
 def get_api_server_url() -> str:
@@ -1268,7 +1279,7 @@ async def _proxy_to_api_server(request: Request, target_path: str | None = None)
     No cookie guard is applied here. The upstream API server enforces
     Authorization: Bearer API_SERVER_KEY and handles CORS/security headers.
     """
-    client = get_http_client()
+    client = get_api_http_client()
     path = target_path or request.url.path
     target = f"{get_api_server_url()}{path}"
     if request.url.query:
@@ -1351,10 +1362,13 @@ async def lifespan(app):
             dash.stop(),
             return_exceptions=True,
         )
-        global _http_client
+        global _http_client, _api_http_client
         if _http_client is not None:
             await _http_client.aclose()
             _http_client = None
+        if _api_http_client is not None:
+            await _api_http_client.aclose()
+            _api_http_client = None
 
 
 # ── WebSocket reverse proxy ──────────────────────────────────────────────────
