@@ -10,3 +10,9 @@ def register(ctx):
         schema=schemas.NEXT_APPOINTMENT,
         handler=tools.next_appointment,
     )
+    ctx.register_tool(
+        name="nabi_care_patient_context",
+        toolset="nabi-care",
+        schema=schemas.PATIENT_CONTEXT,
+        handler=tools.patient_context,
+    )

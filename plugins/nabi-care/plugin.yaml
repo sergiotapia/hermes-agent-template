@@ -3,6 +3,7 @@ version: 0.1.0
 description: Nabi patient-care tools for patient-facing care companion sessions
 provides_tools:
   - nabi_care_next_appointment
+  - nabi_care_patient_context
 requires_env:
   - name: NABI_API_BASE_URL
     description: Base URL for Nabi backend internal Hermes tool endpoints
