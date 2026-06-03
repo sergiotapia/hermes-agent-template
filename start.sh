@@ -17,6 +17,56 @@ fi
 
 [ ! -f /data/.hermes/.env ] && touch /data/.hermes/.env
 
+if [ -d /app/plugins/nabi-care ]; then
+  mkdir -p /data/.hermes/plugins
+  rm -rf /data/.hermes/plugins/nabi-care
+  cp -a /app/plugins/nabi-care /data/.hermes/plugins/nabi-care
+fi
+
+python - <<'PY'
+from pathlib import Path
+
+import yaml
+
+config_path = Path("/data/.hermes/config.yaml")
+config_path.parent.mkdir(parents=True, exist_ok=True)
+
+try:
+    loaded = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+except Exception:
+    loaded = {}
+
+config = loaded if isinstance(loaded, dict) else {}
+
+plugins = config.get("plugins")
+if not isinstance(plugins, dict):
+    plugins = {}
+enabled = plugins.get("enabled")
+if enabled is True:
+    enabled = ["nabi-care"]
+elif isinstance(enabled, list):
+    enabled = [item for item in enabled if item != "nabi-care"] + ["nabi-care"]
+else:
+    enabled = ["nabi-care"]
+plugins["enabled"] = enabled
+config["plugins"] = plugins
+
+platform_toolsets = config.get("platform_toolsets")
+if not isinstance(platform_toolsets, dict):
+    platform_toolsets = {}
+api_server_toolsets = platform_toolsets.get("api_server")
+if not isinstance(api_server_toolsets, list):
+    api_server_toolsets = ["hermes-api-server"]
+if "hermes-api-server" not in api_server_toolsets:
+    api_server_toolsets.insert(0, "hermes-api-server")
+api_server_toolsets = [item for item in api_server_toolsets if item != "nabi-care"]
+api_server_toolsets.append("nabi-care")
+platform_toolsets["api_server"] = api_server_toolsets
+config["platform_toolsets"] = platform_toolsets
+
+config_path.write_text(yaml.safe_dump(config, sort_keys=False, default_flow_style=False))
+PY
+
 # Bootstrap OAuth tokens from env var (e.g. xAI Grok SuperGrok).
 # Set HERMES_AUTH_JSON_BOOTSTRAP to the contents of a locally-generated
 # ~/.hermes/auth.json. Written only once — subsequent token refreshes update
