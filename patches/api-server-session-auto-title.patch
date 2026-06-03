@@ -1,8 +1,8 @@
 diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
-index a56be55..9b67bfc 100644
+index a56be55..0877838 100644
 --- a/gateway/platforms/api_server.py
 +++ b/gateway/platforms/api_server.py
-@@ -1302,6 +1302,83 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -1302,6 +1302,95 @@ class APIServerAdapter(BasePlatformAdapter):
              logger.warning("Failed to load session history for %s: %s", session_id, exc)
              return []
  
@@ -83,10 +83,22 @@ index a56be55..9b67bfc 100644
 +        except Exception:
 +            logger.debug("[api_server] session auto-title failed", exc_info=True)
 +
++    @staticmethod
++    def _session_stream_tool_result(result: Any) -> Any:
++        if isinstance(result, str):
++            stripped = result.strip()
++            if not stripped:
++                return ""
++            try:
++                return json.loads(stripped)
++            except Exception:
++                return result
++        return result
++
      async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
          """GET /api/sessions — list persisted Hermes sessions."""
          auth_err = self._check_auth(request)
-@@ -1514,6 +1591,8 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -1514,6 +1603,8 @@ class APIServerAdapter(BasePlatformAdapter):
          )
          effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
          final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -95,7 +107,46 @@ index a56be55..9b67bfc 100644
          headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
          if gateway_session_key:
              headers["X-Hermes-Session-Key"] = gateway_session_key
-@@ -1605,6 +1684,8 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -1585,9 +1676,29 @@ class APIServerAdapter(BasePlatformAdapter):
+         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+             if event_type == "reasoning.available":
+                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+-            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
+-                event_name = event_type.replace("tool.", "tool.")
+-                _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
++            elif event_type == "tool.failed":
++                _enqueue("tool.failed", {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
++
++        def _tool_start(tool_call_id, function_name, function_args):
++            if not tool_call_id:
++                return
++            _enqueue("tool.started", {
++                "message_id": message_id,
++                "tool_call_id": tool_call_id,
++                "tool_name": function_name,
++                "args": function_args or {},
++            })
++
++        def _tool_complete(tool_call_id, function_name, function_args, function_result):
++            if not tool_call_id:
++                return
++            _enqueue("tool.completed", {
++                "message_id": message_id,
++                "tool_call_id": tool_call_id,
++                "tool_name": function_name,
++                "args": function_args or {},
++                "result": self._session_stream_tool_result(function_result),
++            })
+ 
+         async def _run_and_signal() -> None:
+             try:
+@@ -1601,10 +1712,14 @@ class APIServerAdapter(BasePlatformAdapter):
+                     session_id=session_id,
+                     stream_delta_callback=_delta,
+                     tool_progress_callback=_tool_progress,
++                    tool_start_callback=_tool_start,
++                    tool_complete_callback=_tool_complete,
+                     gateway_session_key=gateway_session_key,
                  )
                  final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                  effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -105,7 +156,7 @@ index a56be55..9b67bfc 100644
                      "session_id": effective_session_id,
                      "message_id": message_id,
 diff --git a/tests/gateway/test_session_api.py b/tests/gateway/test_session_api.py
-index a2d00d9..4066844 100644
+index a2d00d9..6ec748b 100644
 --- a/tests/gateway/test_session_api.py
 +++ b/tests/gateway/test_session_api.py
 @@ -180,6 +180,41 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
@@ -150,10 +201,45 @@ index a2d00d9..4066844 100644
  @pytest.mark.asyncio
  async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
      session_id = session_db.create_session("image-session", "api_server")
-@@ -269,6 +304,43 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
+@@ -269,6 +304,78 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
      assert "event: done" in body
  
  
++@pytest.mark.asyncio
++async def test_session_chat_stream_emits_structured_tool_result(adapter, session_db):
++    session_id = session_db.create_session("stream-tool-session", "api_server")
++
++    async def fake_run(**kwargs):
++        kwargs["tool_start_callback"]("call_1", "nabi_care_next_appointment", {})
++        kwargs["tool_complete_callback"](
++            "call_1",
++            "nabi_care_next_appointment",
++            {},
++            '{"ok":true,"artifacts":[{"type":"appointment.card","version":1}]}',
++        )
++        kwargs["stream_delta_callback"]("Your next appointment is tomorrow.")
++        return {
++            "final_response": "Your next appointment is tomorrow.",
++            "session_id": session_id,
++        }, {"total_tokens": 6}
++
++    app = _create_session_app(adapter)
++    with patch.object(adapter, "_run_agent", side_effect=fake_run):
++        async with TestClient(TestServer(app)) as cli:
++            resp = await cli.post(
++                f"/api/sessions/{session_id}/chat/stream",
++                json={"message": "When is my next appointment?"},
++            )
++            assert resp.status == 200
++            body = await resp.text()
++
++    assert "event: tool.started" in body
++    assert "event: tool.completed" in body
++    assert '"tool_call_id": "call_1"' in body
++    assert '"tool_name": "nabi_care_next_appointment"' in body
++    assert '"appointment.card"' in body
++
++
 +@pytest.mark.asyncio
 +async def test_session_chat_stream_calls_auto_title_after_successful_turn(adapter, session_db):
 +    session_id = session_db.create_session("stream-title-session", "api_server")

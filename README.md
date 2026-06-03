@@ -66,6 +66,8 @@ Message your Telegram bot. If you're a new user, a pairing request will appear i
 | `PORT` | `8080` | Web server port (set automatically by Railway) |
 | `ADMIN_USERNAME` | `admin` | Basic auth username |
 | `ADMIN_PASSWORD` | *(auto-generated)* | Basic auth password — if unset, a random password is printed to logs |
+| `NABI_API_BASE_URL` | *(none)* | Nabi backend base URL used by the bundled `nabi-care` Hermes plugin |
+| `NABI_HERMES_TOOL_TOKEN` | *(none)* | Bearer token used by Hermes to call Nabi internal care-agent tool endpoints |
 
 All other configuration (LLM provider, model, channels, tools) is managed through the admin dashboard.
 
