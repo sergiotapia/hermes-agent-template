@@ -1,0 +1,12 @@
+name: nabi-clinician-tools
+version: 0.1.0
+description: Nabi clinician tools for clinician-facing assistant sessions
+provides_tools:
+  - nabi_clinician_patient_context
+requires_env:
+  - name: NABI_API_BASE_URL
+    description: Base URL for Nabi backend internal Hermes tool endpoints
+    secret: false
+  - name: NABI_HERMES_TOOL_TOKEN
+    description: Bearer token for Nabi internal Hermes tool endpoints
+    secret: true

@@ -17,11 +17,13 @@ fi
 
 [ ! -f /data/.hermes/.env ] && touch /data/.hermes/.env
 
-if [ -d /app/plugins/nabi-care ]; then
-  mkdir -p /data/.hermes/plugins
-  rm -rf /data/.hermes/plugins/nabi-care
-  cp -a /app/plugins/nabi-care /data/.hermes/plugins/nabi-care
-fi
+for plugin in nabi-care nabi-clinician-tools; do
+  if [ -d "/app/plugins/${plugin}" ]; then
+    mkdir -p /data/.hermes/plugins
+    rm -rf "/data/.hermes/plugins/${plugin}"
+    cp -a "/app/plugins/${plugin}" "/data/.hermes/plugins/${plugin}"
+  fi
+done
 
 python - <<'PY'
 from pathlib import Path
@@ -37,30 +39,38 @@ except Exception:
     loaded = {}
 
 config = loaded if isinstance(loaded, dict) else {}
+required_plugins = ["nabi-care", "nabi-clinician-tools"]
 
 plugins = config.get("plugins")
 if not isinstance(plugins, dict):
     plugins = {}
+
 enabled = plugins.get("enabled")
 if enabled is True:
-    enabled = ["nabi-care"]
+    enabled = list(required_plugins)
 elif isinstance(enabled, list):
-    enabled = [item for item in enabled if item != "nabi-care"] + ["nabi-care"]
+    enabled = [item for item in enabled if item not in required_plugins]
+    enabled.extend(required_plugins)
 else:
-    enabled = ["nabi-care"]
+    enabled = list(required_plugins)
+
 plugins["enabled"] = enabled
 config["plugins"] = plugins
 
 platform_toolsets = config.get("platform_toolsets")
 if not isinstance(platform_toolsets, dict):
     platform_toolsets = {}
+
 api_server_toolsets = platform_toolsets.get("api_server")
 if not isinstance(api_server_toolsets, list):
     api_server_toolsets = ["hermes-api-server"]
 if "hermes-api-server" not in api_server_toolsets:
     api_server_toolsets.insert(0, "hermes-api-server")
-api_server_toolsets = [item for item in api_server_toolsets if item != "nabi-care"]
-api_server_toolsets.append("nabi-care")
+
+api_server_toolsets = [
+    item for item in api_server_toolsets if item not in required_plugins
+]
+api_server_toolsets.extend(required_plugins)
 platform_toolsets["api_server"] = api_server_toolsets
 config["platform_toolsets"] = platform_toolsets
 
